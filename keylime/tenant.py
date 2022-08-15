@@ -62,6 +62,7 @@ class Tenant:
     tpm_policy = None
     metadata = {}
     allowlist = {}
+    ima_policy_name = ""
     ima_sign_verification_keys = []
     revocation_key = ""
     accept_tpm_hash_algs = []
@@ -204,6 +205,12 @@ class Tenant:
             # Process allowlists
             al_data["excllist"] = excl_data
             self.allowlist = al_data
+
+        # Store allowlist name
+        if "allowlist_name" in args and args["allowlist_name"] is not None:
+            self.ima_policy_name = args["allowlist_name"]
+            # Auto-enable IMA (or-bit mask)
+            self.tpm_policy["mask"] = hex(int(self.tpm_policy["mask"], 0) | (1 << config.IMA_PCR))
 
         # Read command-line path string TPM event log (measured boot) reference state
         mb_refstate_data = None
@@ -621,6 +628,7 @@ class Tenant:
             "cloudagent_port": self.agent_port,
             "tpm_policy": json.dumps(self.tpm_policy),
             "ima_policy_bundle": json.dumps(self.allowlist),
+            "ima_policy_name": self.ima_policy_name,
             "mb_refstate": json.dumps(self.mb_refstate),
             "ima_sign_verification_keys": json.dumps(self.ima_sign_verification_keys),
             "metadata": json.dumps(self.metadata),
@@ -1238,13 +1246,15 @@ class Tenant:
         if "allowlist_name" not in args or not args["allowlist_name"]:
             raise UserError("allowlist_name is required to add an allowlist")
 
-        allowlist_name = args["allowlist_name"]
         self.process_allowlist(args)
-        data = {"tpm_policy": json.dumps(self.tpm_policy), "allowlist": json.dumps(self.allowlist)}
+        data = {"tpm_policy": json.dumps(self.tpm_policy), "ima_policy_bundle": json.dumps(self.allowlist)}
         body = json.dumps(data)
         cv_client = RequestsClient(self.verifier_base_url, self.tls_cv_enabled, ignore_hostname=True)
         response = cv_client.post(
-            f"/v{self.api_version}/allowlists/{allowlist_name}", data=body, cert=self.cert, verify=self.verifier_ca_cert
+            f"/v{self.api_version}/allowlists/{self.ima_policy_name}",
+            data=body,
+            cert=self.cert,
+            verify=self.verifier_ca_cert,
         )
         Tenant._print_json_response(response)
 
@@ -1487,6 +1497,8 @@ def main(argv=sys.argv):  # pylint: disable=dangerous-default-value
     args = parser.parse_args(argv[1:])
 
     # Make sure argument dependencies are enforced
+    if args.ima_exclude and not args.allowlist:
+        parser.error("--exclude cannot be used without an --allowlist")
     if args.allowlist and args.allowlist_url:
         parser.error("--allowlist and --allowlist-url cannot be specified at the same time")
     if args.allowlist_url and not (args.allowlist_sig or args.allowlist_sig_url or args.allowlist_checksum):
