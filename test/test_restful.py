@@ -40,7 +40,17 @@ from pathlib import Path
 import dbus
 from cryptography.hazmat.primitives import serialization
 
-from keylime import api_version, config, crypto, fs_util, json, secure_mount, tenant, tornado_requests
+from keylime import (
+    api_version,
+    cloud_verifier_common,
+    config,
+    crypto,
+    fs_util,
+    json,
+    secure_mount,
+    tenant,
+    tornado_requests,
+)
 from keylime.cmd import user_data_encrypt
 from keylime.common import algorithms
 from keylime.ima import ima
@@ -370,10 +380,10 @@ class TestRestful(unittest.TestCase):
 
         # Set up allowlist bundles. Use invalid exclusion list regex for bad bundle.
         cls.ima_policy_bundle = ima.read_allowlist()
-        cls.ima_policy_bundle["excllist"] = base64.b64encode(json.dumps([]).encode()).decode()
+        cls.ima_policy_bundle["excllist"] = []
 
         cls.bad_ima_policy_bundle = ima.read_allowlist()
-        cls.bad_ima_policy_bundle["excllist"] = base64.b64encode(json.dumps(["*"]).encode()).decode()
+        cls.bad_ima_policy_bundle["excllist"] = ["*"]
 
     def setUp(self):
         """Nothing to set up before each test"""
@@ -573,9 +583,11 @@ class TestRestful(unittest.TestCase):
         self.assertIn("quote", json_response["results"], "Malformed response body!")
         self.assertIn("pubkey", json_response["results"], "Malformed response body!")
 
+        agentAttestState = cloud_verifier_common.get_AgentAttestStates().get_by_agent_id(tenant_templ.agent_uuid)
+
         # Check the quote identity
         failure = tpm_instance.check_quote(
-            tenant_templ.agent_uuid,
+            agentAttestState,
             nonce,
             json_response["results"]["pubkey"],
             json_response["results"]["quote"],
@@ -641,7 +653,7 @@ class TestRestful(unittest.TestCase):
         data = {
             "name": "test-allowlist",
             "tpm_policy": json.dumps(self.tpm_policy),
-            "ima_policy": json.dumps(self.allowlist),
+            "ima_policy_bundle": json.dumps(self.ima_policy_bundle),
         }
 
         cv_client = RequestsClient(tenant_templ.verifier_base_url, tls_enabled)
@@ -673,7 +685,14 @@ class TestRestful(unittest.TestCase):
         results = json_response["results"]
         self.assertEqual(results["name"], "test-allowlist")
         self.assertEqual(results["tpm_policy"], json.dumps(self.tpm_policy))
-        self.assertEqual(results["ima_policy"], json.dumps(self.allowlist))
+        self.assertEqual(
+            results["ima_policy"],
+            json.dumps(
+                ima.process_ima_policy(
+                    ima.unbundle_ima_policy(self.ima_policy_bundle, False), self.ima_policy_bundle["excllist"]
+                )
+            ),
+        )
 
     def test_027_cv_allowlist_delete(self):
         """Test CV's DELETE /allowlists/{name} Interface"""
@@ -846,8 +865,10 @@ class TestRestful(unittest.TestCase):
         quote = json_response["results"]["quote"]
         hash_alg = algorithms.Hash(json_response["results"]["hash_alg"])
 
+        agentAttestState = cloud_verifier_common.get_AgentAttestStates().get_by_agent_id(tenant_templ.agent_uuid)
+
         failure = tpm_instance.check_quote(
-            tenant_templ.agent_uuid, nonce, public_key, quote, aik_tpm, self.tpm_policy, hash_alg=hash_alg
+            agentAttestState, nonce, public_key, quote, aik_tpm, self.tpm_policy, hash_alg=hash_alg
         )
         self.assertTrue(not failure)
 

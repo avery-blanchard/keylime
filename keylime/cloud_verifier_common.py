@@ -3,7 +3,7 @@ import base64
 import time
 
 from keylime import config, crypto, json, keylime_logging
-from keylime.agentstates import AgentAttestStates
+from keylime.agentstates import AgentAttestStates, TPMClockInfo
 from keylime.common import algorithms, validators
 from keylime.failure import Component, Failure
 from keylime.ima import file_signatures
@@ -28,7 +28,7 @@ def get_AgentAttestStates():
     return AgentAttestStates.get_instance()
 
 
-def process_quote_response(agent, json_response, agentAttestState) -> Failure:
+def process_quote_response(agent, ima_policy, json_response, agentAttestState) -> Failure:
     """Validates the response from the Cloud agent.
 
     This method invokes an Registrar Server call to register, and then check the quote.
@@ -148,6 +148,9 @@ def process_quote_response(agent, json_response, agentAttestState) -> Failure:
     tenant_keyring = file_signatures.ImaKeyring.from_string(agent["ima_sign_verification_keys"])
     ima_keyrings.set_tenant_keyring(tenant_keyring)
 
+    if "tpm_clockinfo" in agent:
+        agentAttestState.set_tpm_clockinfo(TPMClockInfo.from_dict(agent["tpm_clockinfo"]))
+
     quote_validation_failure = get_tpm_instance().check_quote(
         agentAttestState,
         agent["nonce"],
@@ -156,7 +159,7 @@ def process_quote_response(agent, json_response, agentAttestState) -> Failure:
         agent["ak_tpm"],
         agent["tpm_policy"],
         ima_measurement_list,
-        agent["allowlist"],
+        ima_policy.ima_policy,
         algorithms.Hash(hash_alg),
         ima_keyrings,
         mb_measurement_list,
@@ -166,9 +169,9 @@ def process_quote_response(agent, json_response, agentAttestState) -> Failure:
     failure.merge(quote_validation_failure)
 
     if not failure:
-        # set a flag so that we know that the agent was verified once.
-        # we only issue notifications for agents that were at some point good
-        agent["first_verified"] = True
+        agent["attestation_count"] += 1
+
+        agent["tpm_clockinfo"] = agentAttestState.get_tpm_clockinfo().to_dict()
 
         # has public key changed? if so, clear out b64_encrypted_V, it is no longer valid
         if received_public_key != agent.get("public_key", ""):
@@ -218,9 +221,9 @@ def prepare_get_quote(agent):
 
 
 def process_get_status(agent):
-    allowlist = json.loads(agent.allowlist)
-    if isinstance(allowlist, dict) and "allowlist" in allowlist:
-        al_len = len(allowlist["allowlist"])
+    allowlist_json = json.loads(agent.ima_policy.ima_policy)
+    if isinstance(allowlist_json, dict) and "allowlist" in allowlist_json:
+        al_len = len(allowlist_json["allowlist"])
     else:
         al_len = 0
 
@@ -258,6 +261,7 @@ def process_get_status(agent):
         "verifier_port": agent.verifier_port,
         "severity_level": agent.severity_level,
         "last_event_id": agent.last_event_id,
+        "attestation_count": agent.attestation_count,
     }
     return response
 
@@ -291,12 +295,12 @@ def prepare_error(agent, msgtype="revocation", event=None):
     return tosend
 
 
-def validate_agent_data(agent_data):
+def validate_ima_policy_data(agent_data):
     if agent_data is None:
         return False, None
 
     # validate that the allowlist is proper JSON
-    lists = json.loads(agent_data["allowlist"])
+    lists = json.loads(agent_data)
 
     # Validate exlude list contains valid regular expressions
     is_valid, _, err_msg = validators.valid_exclude_list(lists.get("exclude"))
