@@ -159,7 +159,7 @@ echo "==========================================================================
 pip3 install $UMODE_OPT -r $KEYLIME_DIR/test/test-requirements.txt
 if [ "$RUST_TEST" == 1 ]
 then
-    git clone https://github.com/keylime/rust-keylime.git $KEYLIME_DIR/../rust-keylime
+    git clone https://github.com/avery-blanchard/rust-keylime.git $KEYLIME_DIR/../rust-keylime
     cargo build --manifest-path $KEYLIME_DIR/../rust-keylime/Cargo.toml --bin keylime_agent
 fi
 
